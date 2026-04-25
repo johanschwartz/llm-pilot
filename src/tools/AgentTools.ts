@@ -1,14 +1,12 @@
 // src/tools/AgentTools.ts
-// Tool definitions parsed from model output via XML-style tags.
-// No JSON schema overhead — token-efficient text-based tool calling.
-
 import * as vscode from "vscode";
 import * as path from "path";
+import { ToolDefinition } from "../providers/OllamaProvider";
 import { ContextBuilder } from "../utils/ContextBuilder";
 
 export interface ToolCall {
   name: string;
-  params: Record<string, string>;
+  args: Record<string, string>;
 }
 
 export interface ToolResult {
@@ -17,41 +15,106 @@ export interface ToolResult {
   isError: boolean;
 }
 
-/**
- * Parse tool calls from model output.
- * Models emit: <tool:read_file path="src/foo.ts" start="10" lines="40"/>
- * or multi-line: <tool:write_file path="...">...content...</tool:write_file>
- */
-export function parseToolCalls(text: string): ToolCall[] {
-  const calls: ToolCall[] = [];
-
-  // Self-closing: <tool:name attr="val" .../>
-  const selfClosing = /<tool:(\w+)([^>]*?)\/>/g;
-  let m: RegExpExecArray | null;
-  while ((m = selfClosing.exec(text)) !== null) {
-    calls.push({ name: m[1], params: parseAttrs(m[2]) });
-  }
-
-  // Block: <tool:name attr="val">content</tool:name>
-  const block = /<tool:(\w+)([^>]*)>([\s\S]*?)<\/tool:\1>/g;
-  while ((m = block.exec(text)) !== null) {
-    const params = parseAttrs(m[2]);
-    params["__body__"] = m[3].trim();
-    calls.push({ name: m[1], params });
-  }
-
-  return calls;
-}
-
-function parseAttrs(attrStr: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const re = /(\w+)="([^"]*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(attrStr)) !== null) {
-    out[m[1]] = m[2];
-  }
-  return out;
-}
+export const TOOL_DEFINITIONS: ToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read lines from a file in the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path" },
+          start: { type: "number", description: "Start line, 0-indexed (default 0)" },
+          lines: { type: "number", description: "Number of lines to read (default 80)" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Write or overwrite a file with the given content. Use this to create new files or save generated code.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path" },
+          content: { type: "string", description: "Full file content to write" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_edit",
+      description: "Replace an exact string in a file. Prefer this over write_file for small changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path" },
+          old: { type: "string", description: "Exact text to find and replace" },
+          new: { type: "string", description: "Replacement text" },
+        },
+        required: ["path", "old", "new"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_dir",
+      description: "List files and folders in a directory.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative directory path (default '.')" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_text",
+      description: "Search for a text string across workspace files.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Text to search for" },
+          include: { type: "string", description: "Glob pattern to filter files, e.g. **/*.ts" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_diagnostics",
+      description: "Get current compiler errors and warnings from VSCode.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_terminal",
+      description: "Send a command to the integrated terminal.",
+      parameters: {
+        type: "object",
+        properties: {
+          cmd: { type: "string", description: "Shell command to run" },
+        },
+        required: ["cmd"],
+      },
+    },
+  },
+];
 
 export class AgentToolExecutor {
   private contextBuilder: ContextBuilder;
@@ -72,24 +135,14 @@ export class AgentToolExecutor {
 
   private async dispatch(call: ToolCall): Promise<string> {
     switch (call.name) {
-      case "read_file":
-        return this.readFile(call.params);
-      case "write_file":
-        return this.writeFile(call.params);
-      case "list_dir":
-        return this.listDir(call.params);
-      case "search_text":
-        return this.searchText(call.params);
-      case "apply_edit":
-        return this.applyEdit(call.params);
-      case "run_terminal":
-        return this.runTerminal(call.params);
-      case "get_diagnostics":
-        return this.getDiagnostics();
-      case "done":
-        return call.params["summary"] ?? "Task complete.";
-      default:
-        throw new Error(`Unknown tool: ${call.name}`);
+      case "read_file":      return this.readFile(call.args);
+      case "write_file":     return this.writeFile(call.args);
+      case "apply_edit":     return this.applyEdit(call.args);
+      case "list_dir":       return this.listDir(call.args);
+      case "search_text":    return this.searchText(call.args);
+      case "get_diagnostics":return this.getDiagnostics();
+      case "run_terminal":   return this.runTerminal(call.args);
+      default: throw new Error(`Unknown tool: ${call.name}`);
     }
   }
 
@@ -106,18 +159,36 @@ export class AgentToolExecutor {
 
   private async writeFile(p: Record<string, string>): Promise<string> {
     const filePath = this.resolve(p["path"] ?? "");
-    const content = p["__body__"] ?? p["content"] ?? "";
+    const content = p["content"] ?? "";
     const uri = vscode.Uri.file(filePath);
-    const bytes = Buffer.from(content, "utf8");
-    await vscode.workspace.fs.writeFile(uri, bytes);
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+    // Open the saved file
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
     return `Written ${content.split("\n").length} lines to ${p["path"]}`;
+  }
+
+  private async applyEdit(p: Record<string, string>): Promise<string> {
+    const filePath = this.resolve(p["path"] ?? "");
+    const oldText = p["old"] ?? "";
+    const newText = p["new"] ?? "";
+    const uri = vscode.Uri.file(filePath);
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const content = Buffer.from(bytes).toString("utf8");
+    if (!content.includes(oldText)) {
+      throw new Error("Could not find the exact text to replace. Check whitespace/indentation.");
+    }
+    const updated = content.replace(oldText, newText);
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, "utf8"));
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: true });
+    return `Applied edit to ${p["path"]}`;
   }
 
   private async listDir(p: Record<string, string>): Promise<string> {
     const dirPath = this.resolve(p["path"] ?? ".");
     const uri = vscode.Uri.file(dirPath);
     const entries = await vscode.workspace.fs.readDirectory(uri);
-    // Token-efficient: show tree, cap at 60 entries
     return entries
       .slice(0, 60)
       .map(([name, type]) => (type === vscode.FileType.Directory ? `📁 ${name}/` : `📄 ${name}`))
@@ -129,54 +200,26 @@ export class AgentToolExecutor {
     const include = p["include"] ?? "**/*";
     const results = await vscode.workspace.findFiles(include, "**/node_modules/**", 20);
     const hits: string[] = [];
-
     for (const uri of results) {
       const bytes = await vscode.workspace.fs.readFile(uri);
       const text = Buffer.from(bytes).toString("utf8");
       const lines = text.split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].toLowerCase().includes(query.toLowerCase())) {
-          const rel = path.relative(this.workspaceRoot, uri.fsPath);
-          hits.push(`${rel}:${i + 1}: ${lines[i].trim()}`);
+          hits.push(`${path.relative(this.workspaceRoot, uri.fsPath)}:${i + 1}: ${lines[i].trim()}`);
           if (hits.length >= 20) break;
         }
       }
       if (hits.length >= 20) break;
     }
-
     return hits.length > 0 ? hits.join("\n") : "No matches found.";
   }
 
-  private async applyEdit(p: Record<string, string>): Promise<string> {
-    const filePath = this.resolve(p["path"] ?? "");
-    const oldText = p["old"] ?? "";
-    const newText = p["new"] ?? "";
-
-    const uri = vscode.Uri.file(filePath);
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    const content = Buffer.from(bytes).toString("utf8");
-
-    if (!content.includes(oldText)) {
-      throw new Error("Could not find the exact text to replace. Check whitespace/indentation.");
-    }
-
-    const updated = content.replace(oldText, newText);
-    await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, "utf8"));
-
-    // Open the file and show the change
-    const doc = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(doc, { preview: true });
-
-    return `Applied edit to ${p["path"]}`;
-  }
-
   private async runTerminal(p: Record<string, string>): Promise<string> {
-    const cmd = p["cmd"] ?? "";
-    // Safety: surface to user, don't auto-run arbitrary commands
-    const terminal = vscode.window.createTerminal("Ollama Pilot");
+    const terminal = vscode.window.createTerminal("LLM Pilot");
     terminal.show();
-    terminal.sendText(cmd);
-    return `Command sent to terminal: ${cmd}\n(Review output in the terminal panel)`;
+    terminal.sendText(p["cmd"] ?? "");
+    return `Command sent to terminal: ${p["cmd"]}`;
   }
 
   private getDiagnostics(): string {
@@ -185,8 +228,7 @@ export class AgentToolExecutor {
       for (const d of diags) {
         if (d.severity <= vscode.DiagnosticSeverity.Warning) {
           const rel = path.relative(this.workspaceRoot, uri.fsPath);
-          const sev = d.severity === 0 ? "ERROR" : "WARN";
-          lines.push(`${sev} ${rel}:${d.range.start.line + 1} — ${d.message}`);
+          lines.push(`${d.severity === 0 ? "ERROR" : "WARN"} ${rel}:${d.range.start.line + 1} — ${d.message}`);
         }
       }
     }
@@ -198,25 +240,3 @@ export class AgentToolExecutor {
     return path.join(this.workspaceRoot, filePath);
   }
 }
-
-/** The system prompt section that teaches the model to use tools. Token-efficient. */
-export const TOOL_SYSTEM_PROMPT = `You are an expert coding assistant with access to tools. Use tools when you need to read/write files or search code. 
-
-TOOLS — emit exactly as shown:
-<tool:read_file path="relative/path.ts" start="0" lines="80"/>
-<tool:write_file path="relative/path.ts">
-full file content here
-</tool:write_file>
-<tool:apply_edit path="relative/path.ts" old="exact text to find" new="replacement text"/>
-<tool:list_dir path="src/"/>
-<tool:search_text query="functionName" include="**/*.ts"/>
-<tool:get_diagnostics/>
-<tool:run_terminal cmd="npm test"/>
-<tool:done summary="Brief description of what was done"/>
-
-Rules:
-- Use apply_edit for small changes, write_file for new files or rewrites
-- Read files before editing if you need to see their content
-- When finished, emit <tool:done summary="..."/>
-- Think step by step before choosing a tool
-- Be concise in explanations; be precise in code`;

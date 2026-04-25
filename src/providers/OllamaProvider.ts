@@ -1,13 +1,28 @@
 // src/providers/OllamaProvider.ts
-// Low-level Ollama API client with streaming support
-
 import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
 
 export interface OllamaMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  tool_calls?: OllamaToolCall[];
+}
+
+export interface OllamaToolCall {
+  function: {
+    name: string;
+    arguments: Record<string, string>;
+  };
+}
+
+export interface ToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: object;
+  };
 }
 
 export interface OllamaOptions {
@@ -20,6 +35,7 @@ export interface OllamaOptions {
 export interface StreamChunk {
   content: string;
   done: boolean;
+  toolCalls?: OllamaToolCall[];
   promptTokens?: number;
   completionTokens?: number;
 }
@@ -29,12 +45,14 @@ export class OllamaProvider {
 
   async *streamChat(
     messages: OllamaMessage[],
+    tools?: ToolDefinition[],
     signal?: AbortSignal
   ): AsyncGenerator<StreamChunk> {
     const url = new URL("/api/chat", this.opts.baseUrl);
     const body = JSON.stringify({
       model: this.opts.model,
       messages,
+      tools: tools && tools.length > 0 ? tools : undefined,
       stream: true,
       options: {
         temperature: this.opts.temperature ?? 0.2,
@@ -42,41 +60,35 @@ export class OllamaProvider {
       },
     });
 
-    const chunks = this.makeRequest(url, body, signal);
-
-    for await (const raw of chunks) {
+    for await (const raw of this.makeRequest(url, body, signal)) {
       try {
         const parsed = JSON.parse(raw);
         if (parsed.error) throw new Error(`Ollama error: ${parsed.error}`);
-        yield {
-          content: parsed.message?.content ?? "",
-          done: parsed.done ?? false,
-          promptTokens: parsed.prompt_eval_count,
-          completionTokens: parsed.eval_count,
-        };
+
+        const toolCalls = parsed.message?.tool_calls as OllamaToolCall[] | undefined;
+        if (toolCalls && toolCalls.length > 0) {
+          // Normalise arguments — Ollama sometimes sends them as a JSON string
+          const normalised = toolCalls.map(tc => ({
+            function: {
+              name: tc.function.name,
+              arguments: typeof tc.function.arguments === "string"
+                ? JSON.parse(tc.function.arguments)
+                : tc.function.arguments,
+            },
+          }));
+          yield { content: "", done: parsed.done ?? false, toolCalls: normalised };
+        } else {
+          yield {
+            content: parsed.message?.content ?? "",
+            done: parsed.done ?? false,
+            promptTokens: parsed.prompt_eval_count,
+            completionTokens: parsed.eval_count,
+          };
+        }
       } catch {
-        // Skip malformed chunks
+        // skip malformed chunks
       }
     }
-  }
-
-  async chat(
-    messages: OllamaMessage[],
-    signal?: AbortSignal
-  ): Promise<{ content: string; promptTokens: number; completionTokens: number }> {
-    let content = "";
-    let promptTokens = 0;
-    let completionTokens = 0;
-
-    for await (const chunk of this.streamChat(messages, signal)) {
-      content += chunk.content;
-      if (chunk.done) {
-        promptTokens = chunk.promptTokens ?? 0;
-        completionTokens = chunk.completionTokens ?? 0;
-      }
-    }
-
-    return { content, promptTokens, completionTokens };
   }
 
   async listModels(): Promise<string[]> {
@@ -96,18 +108,11 @@ export class OllamaProvider {
         });
       });
       req.on("error", reject);
-      req.setTimeout(5000, () => {
-        req.destroy();
-        reject(new Error("Ollama connection timeout — is Ollama running?"));
-      });
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error("Ollama connection timeout")); });
     });
   }
 
-  private async *makeRequest(
-    url: URL,
-    body: string,
-    signal?: AbortSignal
-  ): AsyncGenerator<string> {
+  private async *makeRequest(url: URL, body: string, signal?: AbortSignal): AsyncGenerator<string> {
     const client = url.protocol === "https:" ? https : http;
     let buffer = "";
 
@@ -116,27 +121,20 @@ export class OllamaProvider {
         url.toString(),
         { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
         (res) => {
-          resolve(
-            (async function* () {
-              for await (const chunk of res) {
-                if (signal?.aborted) return;
-                buffer += chunk.toString();
-                const lines = buffer.split("\n");
-                buffer = lines.pop() ?? "";
-                for (const line of lines) {
-                  if (line.trim()) yield line;
-                }
-              }
-              if (buffer.trim()) yield buffer;
-            })()
-          );
+          resolve((async function* () {
+            for await (const chunk of res) {
+              if (signal?.aborted) return;
+              buffer += chunk.toString();
+              const lines = buffer.split("\n");
+              buffer = lines.pop() ?? "";
+              for (const line of lines) { if (line.trim()) yield line; }
+            }
+            if (buffer.trim()) yield buffer;
+          })());
         }
       );
-
       req.on("error", reject);
-      if (signal) {
-        signal.addEventListener("abort", () => req.destroy());
-      }
+      if (signal) signal.addEventListener("abort", () => req.destroy());
       req.write(body);
       req.end();
     });

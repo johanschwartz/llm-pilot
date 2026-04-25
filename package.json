@@ -1,10 +1,10 @@
 {
-  "name": "ollama-pilot",
-  "displayName": "Ollama Pilot",
-  "description": "Agentic AI coding assistant powered by local Ollama models",
-  "version": "0.1.0",
+  "name": "llm-pilot",
+  "displayName": "LLM Pilot",
+  "description": "Agentic AI coding assistant powered by local LLMs",
+  "version": "0.1.5",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.116.0"
   },
   "categories": [
     "AI",
@@ -17,103 +17,85 @@
   "contributes": {
     "commands": [
       {
-        "command": "ollamaPilot.openChat",
-        "title": "Ollama Pilot: Open Chat"
+        "command": "llmPilot.openChat",
+        "title": "LLM Pilot: Open Chat"
       },
       {
-        "command": "ollamaPilot.inlineEdit",
-        "title": "Ollama Pilot: Inline Edit Selection"
+        "command": "llmPilot.inlineEdit",
+        "title": "LLM Pilot: Inline Edit Selection"
       },
       {
-        "command": "ollamaPilot.explainCode",
-        "title": "Ollama Pilot: Explain Code"
+        "command": "llmPilot.explainCode",
+        "title": "LLM Pilot: Explain Code"
       },
       {
-        "command": "ollamaPilot.fixError",
-        "title": "Ollama Pilot: Fix Diagnostic Error"
+        "command": "llmPilot.fixError",
+        "title": "LLM Pilot: Fix Diagnostic Error"
       },
       {
-        "command": "ollamaPilot.selectModel",
-        "title": "Ollama Pilot: Select Model"
+        "command": "llmPilot.selectModel",
+        "title": "LLM Pilot: Select Model"
       }
     ],
     "keybindings": [
       {
-        "command": "ollamaPilot.openChat",
+        "command": "llmPilot.openChat",
         "key": "ctrl+shift+o",
         "mac": "cmd+shift+o"
       },
       {
-        "command": "ollamaPilot.inlineEdit",
+        "command": "llmPilot.inlineEdit",
         "key": "ctrl+shift+e",
         "mac": "cmd+shift+e",
         "when": "editorHasSelection"
       }
     ],
     "configuration": {
-      "title": "Ollama Pilot",
+      "title": "LLM Pilot",
       "properties": {
-        "ollamaPilot.ollamaUrl": {
+        "llmPilot.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Ollama server URL"
         },
-        "ollamaPilot.model": {
+        "llmPilot.model": {
           "type": "string",
-          "default": "qwen2.5-coder:7b",
+          "default": "qwen3.6:35b",
           "description": "Default Ollama model to use"
         },
-        "ollamaPilot.contextLines": {
+        "llmPilot.contextLines": {
           "type": "number",
           "default": 80,
           "description": "Max lines of context to send around cursor (token efficiency)"
         },
-        "ollamaPilot.maxTokens": {
+        "llmPilot.maxTokens": {
           "type": "number",
-          "default": 2048,
+          "default": 32768,
           "description": "Max tokens per response"
         },
-        "ollamaPilot.temperature": {
+        "llmPilot.temperature": {
           "type": "number",
           "default": 0.2,
           "description": "Model temperature (lower = more deterministic)"
         },
-        "ollamaPilot.agentMaxIterations": {
+        "llmPilot.agentMaxIterations": {
           "type": "number",
           "default": 10,
           "description": "Max tool-use iterations per agent run"
         }
       }
     },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "ollamaPilot",
-          "title": "Ollama Pilot",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "ollamaPilot": [
-        {
-          "type": "webview",
-          "id": "ollamaPilot.chatView",
-          "name": "Chat"
-        }
-      ]
-    },
     "menus": {
       "editor/context": [
         {
-          "command": "ollamaPilot.inlineEdit",
+          "command": "llmPilot.inlineEdit",
           "when": "editorHasSelection",
-          "group": "ollamaPilot"
+          "group": "llmPilot"
         },
         {
-          "command": "ollamaPilot.explainCode",
+          "command": "llmPilot.explainCode",
           "when": "editorHasSelection",
-          "group": "ollamaPilot"
+          "group": "llmPilot"
         }
       ]
     }
@@ -121,7 +103,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository --skip-license"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",

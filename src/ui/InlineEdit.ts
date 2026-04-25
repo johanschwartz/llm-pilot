@@ -23,16 +23,16 @@ export async function handleInlineEdit(
 
   if (!prompt) return;
 
-  const cfg = vscode.workspace.getConfiguration("ollamaPilot");
+  const cfg = vscode.workspace.getConfiguration("llmPilot");
   const selectedCode = editor.document.getText(sel);
   const language = editor.document.languageId;
 
   const harness = new AgentHarness(
     {
-      model: cfg.get<string>("model") ?? "qwen2.5-coder:7b",
+      model: cfg.get<string>("model") ?? "qwen3.6:35b",
       baseUrl: cfg.get<string>("ollamaUrl") ?? "http://localhost:11434",
       temperature: cfg.get<number>("temperature") ?? 0.1,
-      maxTokens: cfg.get<number>("maxTokens") ?? 2048,
+      maxTokens: cfg.get<number>("maxTokens") ?? 32768,
       maxIterations: 1, // Single shot for inline edits
       contextLines: cfg.get<number>("contextLines") ?? 80,
     },
@@ -53,7 +53,7 @@ export async function handleInlineEdit(
   const abortController = new AbortController();
 
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Ollama Pilot: Editing...", cancellable: true },
+    { location: vscode.ProgressLocation.Notification, title: "LLM Pilot: Editing...", cancellable: true },
     async (progress, token) => {
       token.onCancellationRequested(() => abortController.abort());
 
@@ -69,7 +69,7 @@ export async function handleInlineEdit(
         await editor.edit((editBuilder) => {
           editBuilder.replace(sel, result);
         });
-        vscode.window.setStatusBarMessage(`✓ Ollama Pilot: Edit applied (${harness.tokenUsage.total} tokens)`, 4000);
+        vscode.window.setStatusBarMessage(`✓ LLM Pilot: Edit applied (${harness.tokenUsage.total} tokens)`, 4000);
       }
     }
   );
@@ -80,10 +80,10 @@ export async function handleExplainCode(editor: vscode.TextEditor): Promise<void
   const code = sel.isEmpty ? editor.document.getText() : editor.document.getText(sel);
   const language = editor.document.languageId;
 
-  const cfg = vscode.workspace.getConfiguration("ollamaPilot");
+  const cfg = vscode.workspace.getConfiguration("llmPilot");
   const harness = new AgentHarness(
     {
-      model: cfg.get<string>("model") ?? "qwen2.5-coder:7b",
+      model: cfg.get<string>("model") ?? "qwen3.6:35b",
       baseUrl: cfg.get<string>("ollamaUrl") ?? "http://localhost:11434",
       temperature: 0.3,
       maxTokens: 1024,
@@ -98,7 +98,7 @@ export async function handleExplainCode(editor: vscode.TextEditor): Promise<void
     { role: "user" as const, content: `${language}:\n${code.slice(0, 2000)}` },
   ];
 
-  const panel = vscode.window.createOutputChannel("Ollama Pilot — Explanation");
+  const panel = vscode.window.createOutputChannel("LLM Pilot — Explanation");
   panel.show();
   panel.appendLine(`Explaining ${language} code...\n${"─".repeat(60)}\n`);
 
@@ -122,10 +122,10 @@ export async function handleFixError(editor: vscode.TextEditor): Promise<void> {
   const fileCtx = contextBuilder.buildFileContext(editor);
   const errorSummary = errors.slice(0, 5).map(e => `Line ${e.range.start.line + 1}: ${e.message}`).join("\n");
 
-  const cfg = vscode.workspace.getConfiguration("ollamaPilot");
+  const cfg = vscode.workspace.getConfiguration("llmPilot");
   const harness = new AgentHarness(
     {
-      model: cfg.get<string>("model") ?? "qwen2.5-coder:7b",
+      model: cfg.get<string>("model") ?? "qwen3.6:35b",
       baseUrl: cfg.get<string>("ollamaUrl") ?? "http://localhost:11434",
       temperature: 0.1,
       maxTokens: 2048,
@@ -154,6 +154,6 @@ export async function handleFixError(editor: vscode.TextEditor): Promise<void> {
   if (result) {
     const fullRange = new vscode.Range(0, 0, editor.document.lineCount - 1, editor.document.lineAt(editor.document.lineCount - 1).text.length);
     await editor.edit(editBuilder => editBuilder.replace(fullRange, result));
-    vscode.window.setStatusBarMessage("✓ Ollama Pilot: Errors fixed", 4000);
+    vscode.window.setStatusBarMessage("✓ LLM Pilot: Errors fixed", 4000);
   }
 }
