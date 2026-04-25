@@ -35,7 +35,6 @@ export interface OllamaOptions {
 export interface StreamChunk {
   content: string;
   done: boolean;
-  toolCalls?: OllamaToolCall[];
   promptTokens?: number;
   completionTokens?: number;
 }

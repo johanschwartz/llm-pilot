@@ -2,7 +2,6 @@
 import { OllamaProvider, OllamaMessage } from "../providers/OllamaProvider";
 import { TOOL_DEFINITIONS, AgentToolExecutor, ToolCall, ToolResult } from "../tools/AgentTools";
 import { ContextBuilder, FileContext } from "../utils/ContextBuilder";
-import * as vscode from "vscode";
 
 export interface AgentConfig {
   model: string;
@@ -14,7 +13,7 @@ export interface AgentConfig {
 }
 
 export interface AgentEvent {
-  type: "thinking" | "tool_call" | "tool_result" | "response" | "done" | "error" | "token_usage" | "save_prompt";
+  type: "tool_call" | "tool_result" | "response" | "done" | "error" | "token_usage" | "save_prompt";
   content: string;
   toolName?: string;
   isError?: boolean;
@@ -75,8 +74,6 @@ export class AgentHarness {
     while (iterations < this.config.maxIterations) {
       if (signal.aborted) { yield { type: "done", content: "Cancelled." }; return; }
       iterations++;
-
-      yield { type: "thinking", content: "" };
 
       const response = await this.provider.complete(history, TOOL_DEFINITIONS, signal);
 
