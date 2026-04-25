@@ -2,7 +2,7 @@
   "name": "llm-pilot",
   "displayName": "LLM Pilot",
   "description": "Agentic AI coding assistant powered by local LLMs",
-  "version": "0.2.6",
+  "version": "0.2.12",
   "engines": {
     "vscode": "^1.116.0"
   },
