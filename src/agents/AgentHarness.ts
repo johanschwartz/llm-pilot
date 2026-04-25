@@ -14,19 +14,27 @@ export interface AgentConfig {
 }
 
 export interface AgentEvent {
-  type: "thinking" | "tool_call" | "tool_result" | "response" | "done" | "error" | "token_usage";
+  type: "thinking" | "tool_call" | "tool_result" | "response" | "done" | "error" | "token_usage" | "save_prompt";
   content: string;
   toolName?: string;
   isError?: boolean;
   promptTokens?: number;
   completionTokens?: number;
+  codeBlocks?: CodeBlock[];
 }
 
-const AGENT_SYSTEM_PROMPT = `You are an expert coding assistant with file system tools.
-When asked to create or modify files, use the provided tools — do not just output code.
-Always use write_file to save new files. Use apply_edit for targeted changes to existing files.
-Read files before editing when you need to see their contents.
-When your task is complete, give a brief summary of what you did.`;
+export interface CodeBlock {
+  lang: string;
+  code: string;
+}
+
+const AGENT_SYSTEM_PROMPT = `You are a coding assistant. You have tools to read and write files.
+
+Rules:
+- NEVER output code in your message text. ALWAYS call write_file to save code instead.
+- If asked to build or create something, call write_file immediately with the complete file content.
+- Do not describe what you will do — just do it by calling the tool.
+- After saving, give a one-sentence summary.`;
 
 export class AgentHarness {
   private provider: OllamaProvider;
@@ -58,10 +66,11 @@ export class AgentHarness {
 
     const history: OllamaMessage[] = [
       { role: "system", content: systemContent },
-      { role: "user", content: userMessage },
+      { role: "user", content: `/no_think\n${userMessage}` },
     ];
 
     let iterations = 0;
+    let lastToolSig = "";
 
     while (iterations < this.config.maxIterations) {
       if (signal.aborted) { yield { type: "done", content: "Cancelled." }; return; }
@@ -69,64 +78,61 @@ export class AgentHarness {
 
       yield { type: "thinking", content: "" };
 
-      let fullContent = "";
-      let toolCalls: ToolCall[] = [];
-      let chunkPromptTokens = 0;
-      let chunkCompletionTokens = 0;
+      const response = await this.provider.complete(history, TOOL_DEFINITIONS, signal);
 
-      for await (const chunk of this.provider.streamChat(history, TOOL_DEFINITIONS, signal)) {
-        if (signal.aborted) break;
+      this.totalPromptTokens += response.promptTokens;
+      this.totalCompletionTokens += response.completionTokens;
 
-        if (chunk.toolCalls && chunk.toolCalls.length > 0) {
-          toolCalls = chunk.toolCalls.map(tc => ({ name: tc.function.name, args: tc.function.arguments }));
-        } else {
-          fullContent += chunk.content;
-          if (chunk.content) yield { type: "response", content: chunk.content };
+      yield {
+        type: "token_usage",
+        content: `prompt: ${response.promptTokens} + completion: ${response.completionTokens} | total: ${this.totalPromptTokens + this.totalCompletionTokens}`,
+        promptTokens: this.totalPromptTokens,
+        completionTokens: this.totalCompletionTokens,
+      };
+
+      // Strip <think>...</think> blocks from visible content
+      const visibleContent = response.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+
+      if (response.toolCalls.length === 0) {
+        // No tool calls — check if response contains unsaved code blocks
+        if (visibleContent) yield { type: "response", content: visibleContent };
+
+        const codeBlocks = extractCodeBlocks(visibleContent);
+        if (codeBlocks.length > 0) {
+          yield { type: "save_prompt", content: "Modellen genererade kod men sparade ingen fil.", codeBlocks };
         }
 
-        if (chunk.done) {
-          chunkPromptTokens = chunk.promptTokens ?? 0;
-          chunkCompletionTokens = chunk.completionTokens ?? 0;
-        }
-      }
-
-      this.totalPromptTokens += chunkPromptTokens;
-      this.totalCompletionTokens += chunkCompletionTokens;
-
-      if (chunkPromptTokens > 0) {
-        yield {
-          type: "token_usage",
-          content: `prompt: ${chunkPromptTokens} + completion: ${chunkCompletionTokens} | total: ${this.totalPromptTokens + this.totalCompletionTokens}`,
-          promptTokens: this.totalPromptTokens,
-          completionTokens: this.totalCompletionTokens,
-        };
-      }
-
-      if (toolCalls.length === 0) {
-        // No tool calls — final answer
-        yield { type: "done", content: fullContent };
+        yield { type: "done", content: visibleContent };
         return;
       }
+
+      if (visibleContent) yield { type: "response", content: visibleContent };
 
       // Add assistant message with tool_calls to history
       history.push({
         role: "assistant",
-        content: fullContent,
-        tool_calls: toolCalls.map(tc => ({ function: { name: tc.name, arguments: tc.args } })),
+        content: response.content,
+        tool_calls: response.toolCalls,
       });
 
-      // Execute each tool and feed results back
-      for (const call of toolCalls) {
+      // Execute each tool
+      const calls: ToolCall[] = response.toolCalls.map(tc => ({ name: tc.function.name, args: tc.function.arguments }));
+
+      // Break if same tool+args called twice in a row (stuck in loop)
+      const sig = JSON.stringify(calls);
+      if (sig === lastToolSig) {
+        yield { type: "done", content: "Task complete." };
+        return;
+      }
+      lastToolSig = sig;
+
+      for (const call of calls) {
         yield { type: "tool_call", content: `${call.name}(${JSON.stringify(call.args)})`, toolName: call.name };
 
         const result: ToolResult = await this.executor.execute(call);
-
         yield { type: "tool_result", content: result.output, toolName: call.name, isError: result.isError };
 
-        history.push({
-          role: "tool",
-          content: result.isError ? `Error: ${result.output}` : result.output,
-        });
+        history.push({ role: "tool", content: result.isError ? `Error: ${result.output}` : result.output });
       }
 
       this.pruneHistory(history);
@@ -136,7 +142,7 @@ export class AgentHarness {
   }
 
   async *chat(messages: OllamaMessage[], signal: AbortSignal): AsyncGenerator<AgentEvent> {
-    for await (const chunk of this.provider.streamChat(messages, undefined, signal)) {
+    for await (const chunk of this.provider.streamChat(messages, signal)) {
       if (signal.aborted) break;
       if (chunk.content) yield { type: "response", content: chunk.content };
       if (chunk.done) {
@@ -169,4 +175,14 @@ export class AgentHarness {
       total: this.totalPromptTokens + this.totalCompletionTokens,
     };
   }
+}
+
+function extractCodeBlocks(text: string): CodeBlock[] {
+  const blocks: CodeBlock[] = [];
+  const re = /```(\w*)\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[2].trim()) blocks.push({ lang: m[1] || "text", code: m[2] });
+  }
+  return blocks;
 }

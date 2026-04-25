@@ -2,7 +2,7 @@
   "name": "llm-pilot",
   "displayName": "LLM Pilot",
   "description": "Agentic AI coding assistant powered by local LLMs",
-  "version": "0.1.5",
+  "version": "0.2.1",
   "engines": {
     "vscode": "^1.116.0"
   },
@@ -80,7 +80,7 @@
         },
         "llmPilot.agentMaxIterations": {
           "type": "number",
-          "default": 10,
+          "default": 20,
           "description": "Max tool-use iterations per agent run"
         }
       }

@@ -1,5 +1,6 @@
 // src/ui/ChatPanel.ts
 import * as vscode from "vscode";
+import * as path from "path";
 import { AgentHarness, AgentEvent } from "../agents/AgentHarness";
 import { ContextBuilder } from "../utils/ContextBuilder";
 import { OllamaProvider, OllamaMessage } from "../providers/OllamaProvider";
@@ -48,13 +49,25 @@ export class ChatPanel {
     };
   }
 
-  private async handleMessage(message: { command: string; text?: string; mode?: string }) {
+  private async handleMessage(message: { command: string; text?: string; mode?: string; filename?: string; code?: string }) {
     switch (message.command) {
       case "send":   await this.handleSend(message.text ?? "", message.mode ?? "agent"); break;
       case "cancel": this.abortController?.abort(); break;
       case "clear":  this.chatHistory = []; break;
       case "getModels": await this.sendModelList(); break;
+      case "saveFile": await this.handleSaveFile(message.filename ?? "", message.code ?? ""); break;
     }
+  }
+
+  private async handleSaveFile(filename: string, code: string) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+    if (!workspaceRoot) { vscode.window.showErrorMessage("No workspace open."); return; }
+    const filePath = path.join(workspaceRoot, filename);
+    const uri = vscode.Uri.file(filePath);
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(code, "utf8"));
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+    this.post({ command: "fileSaved", filename });
   }
 
   private async handleSend(userText: string, mode: string) {
@@ -105,6 +118,7 @@ export class ChatPanel {
       case "token_usage": this.post({ command: "tokenUsage", text: event.content, promptTokens: event.promptTokens, completionTokens: event.completionTokens }); break;
       case "error":       this.post({ command: "error", text: event.content }); break;
       case "done":        this.post({ command: "done", text: event.content }); break;
+      case "save_prompt": this.post({ command: "savePrompt", codeBlocks: event.codeBlocks }); break;
     }
   }
 
@@ -283,6 +297,37 @@ function renderMarkdown(text) {
     .replace(/\`([^\`]+)\`/g,'<code>$1</code>')
     .replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');
 }
+function appendSavePrompt(codeBlocks) {
+  if (!codeBlocks || codeBlocks.length === 0) return;
+  const block = el('div','tool-block');
+  const extMap = { javascript:'js', typescript:'ts', html:'html', css:'css', python:'py', rust:'rs', go:'go', java:'java' };
+  const inputs = codeBlocks.map((cb, i) => {
+    const ext = extMap[cb.lang] || cb.lang || 'txt';
+    return \`<div style="display:flex;gap:4px;margin-top:4px">
+      <input id="save-name-\${i}" style="flex:1;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--border);border-radius:3px;padding:3px 6px;font-size:11px" placeholder="filename.\${ext}" value="output.\${ext}"/>
+      <button onclick="doSave(\${i})" style="background:var(--btn-bg);color:var(--btn-fg);border:none;border-radius:3px;padding:3px 10px;cursor:pointer;font-size:11px">Spara</button>
+    </div>\`;
+  }).join('');
+  block.innerHTML = \`<div class="tool-name call">💾 Modellen sparade ingen fil — spara manuellt?</div>\${inputs}\`;
+  block._codeBlocks = codeBlocks;
+  block.id = 'save-prompt';
+  currentAssistantMsg.appendChild(block);
+  scrollBottom();
+}
+function doSave(i) {
+  const block = document.getElementById('save-prompt');
+  if (!block) return;
+  const filename = document.getElementById(\`save-name-\${i}\`).value.trim();
+  if (!filename) return;
+  vscode.postMessage({ command: 'saveFile', filename, code: block._codeBlocks[i].code });
+}
+function appendFileSaved(filename) {
+  const prompt = document.getElementById('save-prompt');
+  if (prompt) prompt.remove();
+  const b = el('div','tool-block');
+  b.innerHTML = \`<div class="tool-name result">✓ Sparad: \${esc(filename)}</div>\`;
+  currentAssistantMsg.appendChild(b); scrollBottom();
+}
 function esc(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function el(tag,cls) { const e = document.createElement(tag); e.className=cls; return e; }
 function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
@@ -307,6 +352,10 @@ window.addEventListener('message', event => {
     case 'endResponse':
       isStreaming=false; sendBtn.disabled=false; cancelBtn.classList.remove('visible');
       document.getElementById('thinking-indicator')?.remove(); break;
+    case 'savePrompt':
+      appendSavePrompt(msg.codeBlocks); break;
+    case 'fileSaved':
+      appendFileSaved(msg.filename); break;
     case 'modelList':
       modelSelect.innerHTML = '';
       if (msg.error) { modelSelect.innerHTML='<option>Ollama offline</option>'; statusEl.textContent=msg.error; }
