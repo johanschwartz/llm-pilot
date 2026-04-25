@@ -64,7 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
   function updateStatusBar() {
     const model = vscode.workspace.getConfiguration("llmPilot").get<string>("model") ?? "?";
     statusBar.text = `$(robot) ${model.split(":")[0]}`;
-    statusBar.tooltip = `LLM Pilot — ${model}\nClick to open chat`;
+    statusBar.tooltip = `LLM Pilot — ${model}`;
     statusBar.show();
   }
 

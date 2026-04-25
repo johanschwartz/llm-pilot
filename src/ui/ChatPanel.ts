@@ -2,6 +2,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { AgentHarness, AgentEvent } from "../agents/AgentHarness";
+import { ApprovalCallback } from "../tools/AgentTools";
 import { ContextBuilder } from "../utils/ContextBuilder";
 import { OllamaProvider, OllamaMessage } from "../providers/OllamaProvider";
 
@@ -12,6 +13,7 @@ export class ChatPanel {
   private abortController: AbortController | null = null;
   private contextBuilder: ContextBuilder;
   private chatHistory: OllamaMessage[] = [];
+  private pendingDiff: { resolve: (approved: boolean) => void } | null = null;
 
   private constructor(panel: vscode.WebviewPanel) {
     this.panel = panel;
@@ -26,15 +28,25 @@ export class ChatPanel {
       ChatPanel.currentPanel.panel.reveal(vscode.ViewColumn.Beside, false);
       return;
     }
-
     const panel = vscode.window.createWebviewPanel(
       "llmPilotChat",
       "LLM Pilot",
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true }
     );
-
     ChatPanel.currentPanel = new ChatPanel(panel);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private post(msg: Record<string, any>) {
+    this.panel.webview.postMessage(msg);
+  }
+
+  dispose() {
+    ChatPanel.currentPanel = undefined;
+    this.pendingDiff?.resolve(false);
+    this.panel.dispose();
+    this.disposables.forEach(d => d.dispose());
   }
 
   private getConfig() {
@@ -49,13 +61,24 @@ export class ChatPanel {
     };
   }
 
+  private createApprovalCallback(): ApprovalCallback {
+    return async (filePath, oldContent, newContent, isNew) => {
+      const rel = vscode.workspace.asRelativePath(filePath);
+      const diff = computeDiff(oldContent, newContent);
+      this.post({ command: "diffPreview", path: rel, isNew, diff });
+      return new Promise(resolve => { this.pendingDiff = { resolve }; });
+    };
+  }
+
   private async handleMessage(message: { command: string; text?: string; mode?: string; filename?: string; code?: string }) {
     switch (message.command) {
-      case "send":   await this.handleSend(message.text ?? "", message.mode ?? "agent"); break;
-      case "cancel": this.abortController?.abort(); break;
-      case "clear":  this.chatHistory = []; break;
-      case "getModels": await this.sendModelList(); break;
-      case "saveFile": await this.handleSaveFile(message.filename ?? "", message.code ?? ""); break;
+      case "send":       await this.handleSend(message.text ?? "", message.mode ?? "agent"); break;
+      case "cancel":     this.abortController?.abort(); break;
+      case "clear":      this.chatHistory = []; break;
+      case "getModels":  await this.sendModelList(); break;
+      case "saveFile":   await this.handleSaveFile(message.filename ?? "", message.code ?? ""); break;
+      case "approveDiff": this.pendingDiff?.resolve(true); this.pendingDiff = null; break;
+      case "rejectDiff":  this.pendingDiff?.resolve(false); this.pendingDiff = null; break;
     }
   }
 
@@ -77,7 +100,7 @@ export class ChatPanel {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
     const editor = vscode.window.activeTextEditor;
     const fileContext = editor ? this.contextBuilder.buildFileContext(editor) : null;
-    const harness = new AgentHarness(config, workspaceRoot);
+    const harness = new AgentHarness(config, workspaceRoot, this.createApprovalCallback());
 
     this.post({ command: "startResponse" });
 
@@ -132,17 +155,6 @@ export class ChatPanel {
       const msg = err instanceof Error ? err.message : String(err);
       this.post({ command: "modelList", models: [], error: msg });
     }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private post(msg: Record<string, any>) {
-    this.panel.webview.postMessage(msg);
-  }
-
-  dispose() {
-    ChatPanel.currentPanel = undefined;
-    this.panel.dispose();
-    this.disposables.forEach(d => d.dispose());
   }
 
   private getHtml(): string {
@@ -200,6 +212,18 @@ export class ChatPanel {
   #cancel-btn { background: transparent; color: var(--error); border: 1px solid var(--error); border-radius: 3px; padding: 5px 8px; cursor: pointer; font-size: 11px; display: none; }
   #cancel-btn.visible { display: block; }
   #status { font-size: 10px; color: var(--token-fg); padding: 0 10px 3px; text-align: right; flex-shrink: 0; }
+  /* Diff preview */
+  .diff-block { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-top: 6px; font-size: 11px; }
+  .diff-hdr { padding: 5px 10px; background: var(--tool-bg); font-weight: 600; font-size: 10px; color: #569cd6; }
+  .diff-content { font-family: var(--vscode-editor-font-family); font-size: 11px; max-height: 320px; overflow-y: auto; }
+  .diff-line { padding: 0 10px; white-space: pre; line-height: 1.6; }
+  .diff-add { background: rgba(78,201,78,0.1); color: #4ec94e; }
+  .diff-del { background: rgba(241,76,76,0.1); color: #f14c4c; }
+  .diff-eq { opacity: 0.45; }
+  .diff-collapse { padding: 1px 10px; font-style: italic; opacity: 0.4; font-size: 10px; }
+  .diff-actions { padding: 6px 8px; display: flex; gap: 6px; border-top: 1px solid var(--border); background: var(--tool-bg); }
+  .apply-btn { background: var(--btn-bg); color: var(--btn-fg); border: none; border-radius: 3px; padding: 3px 14px; cursor: pointer; font-size: 11px; }
+  .reject-btn { background: transparent; color: var(--error); border: 1px solid var(--error); border-radius: 3px; padding: 3px 10px; cursor: pointer; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -297,6 +321,48 @@ function renderMarkdown(text) {
     .replace(/\`([^\`]+)\`/g,'<code>$1</code>')
     .replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');
 }
+function showDiffPreview(path, isNew, diff) {
+  document.getElementById('thinking-indicator')?.remove();
+  // Collapse long runs of unchanged lines
+  const rendered = [];
+  let eqRun = [];
+  function flushEq() {
+    if (eqRun.length > 6) {
+      rendered.push(...eqRun.slice(0, 2));
+      rendered.push({ type: 'collapse', count: eqRun.length - 4 });
+      rendered.push(...eqRun.slice(-2));
+    } else {
+      rendered.push(...eqRun);
+    }
+    eqRun = [];
+  }
+  for (const d of diff) {
+    if (d.type === 'eq') { eqRun.push(d); } else { flushEq(); rendered.push(d); }
+  }
+  flushEq();
+
+  const lines = rendered.map(d => {
+    if (d.type === 'collapse') return \`<div class="diff-collapse">··· \${d.count} unchanged ···</div>\`;
+    const prefix = d.type === 'add' ? '+ ' : d.type === 'del' ? '- ' : '  ';
+    const cls = d.type === 'add' ? 'diff-add' : d.type === 'del' ? 'diff-del' : 'diff-eq';
+    return \`<div class="diff-line \${cls}">\${esc(prefix + d.text)}</div>\`;
+  }).join('');
+
+  const header = isNew ? \`📄 New: \${esc(path)}\` : \`✏️ \${esc(path)}\`;
+  const b = el('div','diff-block');
+  b.id = 'diff-preview';
+  b.innerHTML = \`
+    <div class="diff-hdr">\${header}</div>
+    <div class="diff-content">\${lines}</div>
+    <div class="diff-actions">
+      <button class="apply-btn" id="apply-diff-btn">Apply</button>
+      <button class="reject-btn" id="reject-diff-btn">Reject</button>
+    </div>\`;
+  currentAssistantMsg.appendChild(b);
+  document.getElementById('apply-diff-btn').onclick = () => { b.remove(); vscode.postMessage({ command: 'approveDiff' }); };
+  document.getElementById('reject-diff-btn').onclick = () => { b.remove(); vscode.postMessage({ command: 'rejectDiff' }); };
+  scrollBottom();
+}
 function appendSavePrompt(codeBlocks) {
   if (!codeBlocks || codeBlocks.length === 0) return;
   const block = el('div','tool-block');
@@ -342,6 +408,7 @@ window.addEventListener('message', event => {
     case 'toolCall': appendToolCall(msg.toolName, msg.text); break;
     case 'toolResult': appendToolResult(msg.toolName, msg.text, msg.isError); break;
     case 'tokenUsage': statusEl.textContent = msg.text; break;
+    case 'diffPreview': showDiffPreview(msg.path, msg.isNew, msg.diff); break;
     case 'error':
       if (currentAssistantMsg) {
         const err = el('div','tool-block');
@@ -372,4 +439,32 @@ inputEl.focus();
 </body>
 </html>`;
   }
+}
+
+type DiffLine = { type: 'add' | 'del' | 'eq'; text: string };
+
+function computeDiff(oldText: string, newText: string): DiffLine[] {
+  const a = oldText.split('\n');
+  const b = newText.split('\n');
+  const MAX = 300;
+  if (a.length > MAX || b.length > MAX) {
+    return [...a.map(t => ({ type: 'del' as const, text: t })), ...b.map(t => ({ type: 'add' as const, text: t }))];
+  }
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const res: DiffLine[] = [];
+  let i = 0, j = 0;
+  while (i < m || j < n) {
+    if (i < m && j < n && a[i] === b[j]) {
+      res.push({ type: 'eq', text: a[i] }); i++; j++;
+    } else if (i >= m || (j < n && dp[i + 1][j] < dp[i][j + 1])) {
+      res.push({ type: 'add', text: b[j] }); j++;
+    } else {
+      res.push({ type: 'del', text: a[i] }); i++;
+    }
+  }
+  return res;
 }

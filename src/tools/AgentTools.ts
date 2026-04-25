@@ -4,6 +4,8 @@ import * as path from "path";
 import { ToolDefinition } from "../providers/OllamaProvider";
 import { ContextBuilder } from "../utils/ContextBuilder";
 
+export type ApprovalCallback = (filePath: string, oldContent: string, newContent: string, isNew: boolean) => Promise<boolean>;
+
 export interface ToolCall {
   name: string;
   args: Record<string, string>;
@@ -119,7 +121,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 export class AgentToolExecutor {
   private contextBuilder: ContextBuilder;
 
-  constructor(private workspaceRoot: string) {
+  constructor(private workspaceRoot: string, private requestApproval?: ApprovalCallback) {
     this.contextBuilder = new ContextBuilder(120);
   }
 
@@ -160,9 +162,18 @@ export class AgentToolExecutor {
   private async writeFile(p: Record<string, string>): Promise<string> {
     const filePath = this.resolve(p["path"] ?? "");
     const content = p["content"] ?? "";
+    if (this.requestApproval) {
+      let oldContent = "";
+      let isNew = false;
+      try {
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+        oldContent = Buffer.from(bytes).toString("utf8");
+      } catch { isNew = true; }
+      const approved = await this.requestApproval(filePath, oldContent, content, isNew);
+      if (!approved) return `User rejected changes to ${p["path"]}`;
+    }
     const uri = vscode.Uri.file(filePath);
     await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
-    // Open the saved file
     const doc = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
     return `Written ${content.split("\n").length} lines to ${p["path"]}`;
@@ -179,6 +190,10 @@ export class AgentToolExecutor {
       throw new Error("Could not find the exact text to replace. Check whitespace/indentation.");
     }
     const updated = content.replace(oldText, newText);
+    if (this.requestApproval) {
+      const approved = await this.requestApproval(filePath, content, updated, false);
+      if (!approved) return `User rejected edit to ${p["path"]}`;
+    }
     await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, "utf8"));
     const doc = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: true });

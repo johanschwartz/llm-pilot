@@ -1,7 +1,8 @@
 // src/agents/AgentHarness.ts
 import { OllamaProvider, OllamaMessage } from "../providers/OllamaProvider";
-import { TOOL_DEFINITIONS, AgentToolExecutor, ToolCall, ToolResult } from "../tools/AgentTools";
+import { TOOL_DEFINITIONS, AgentToolExecutor, ToolCall, ToolResult, ApprovalCallback } from "../tools/AgentTools";
 import { ContextBuilder, FileContext } from "../utils/ContextBuilder";
+import { buildProjectSummary, resolveAtMentions } from "../utils/ProjectScanner";
 
 export interface AgentConfig {
   model: string;
@@ -42,14 +43,14 @@ export class AgentHarness {
   private totalPromptTokens = 0;
   private totalCompletionTokens = 0;
 
-  constructor(private config: AgentConfig, workspaceRoot: string) {
+  constructor(private config: AgentConfig, private workspaceRoot: string, private requestApproval?: ApprovalCallback) {
     this.provider = new OllamaProvider({
       model: config.model,
       baseUrl: config.baseUrl,
       temperature: config.temperature,
       maxTokens: config.maxTokens,
     });
-    this.executor = new AgentToolExecutor(workspaceRoot);
+    this.executor = new AgentToolExecutor(workspaceRoot, requestApproval);
     this.contextBuilder = new ContextBuilder(config.contextLines);
   }
 
@@ -58,14 +59,20 @@ export class AgentHarness {
     fileContext: FileContext | null,
     signal: AbortSignal
   ): AsyncGenerator<AgentEvent> {
-    const systemContent = fileContext
-      ? AGENT_SYSTEM_PROMPT + "\n\n## Current File\n" + this.contextBuilder.formatForPrompt(fileContext) +
-        (fileContext.selectionOrCursor ? `\n\n## Selected Code\n\`\`\`\n${fileContext.selectionOrCursor}\n\`\`\`` : "")
-      : AGENT_SYSTEM_PROMPT;
+    const projectSummary = await buildProjectSummary(this.workspaceRoot).catch(() => "");
+    const resolvedMessage = await resolveAtMentions(userMessage, this.workspaceRoot);
+
+    let systemContent = AGENT_SYSTEM_PROMPT;
+    if (projectSummary) systemContent += `\n\n${projectSummary}`;
+    if (fileContext) {
+      systemContent += "\n\n## Current File\n" + this.contextBuilder.formatForPrompt(fileContext);
+      if (fileContext.selectionOrCursor)
+        systemContent += `\n\n## Selected Code\n\`\`\`\n${fileContext.selectionOrCursor}\n\`\`\``;
+    }
 
     const history: OllamaMessage[] = [
       { role: "system", content: systemContent },
-      { role: "user", content: `/no_think\n${userMessage}` },
+      { role: "user", content: `/no_think\n${resolvedMessage}` },
     ];
 
     let iterations = 0;
