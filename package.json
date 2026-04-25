@@ -1,0 +1,131 @@
+{
+  "name": "ollama-pilot",
+  "displayName": "Ollama Pilot",
+  "description": "Agentic AI coding assistant powered by local Ollama models",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollamaPilot.openChat",
+        "title": "Ollama Pilot: Open Chat"
+      },
+      {
+        "command": "ollamaPilot.inlineEdit",
+        "title": "Ollama Pilot: Inline Edit Selection"
+      },
+      {
+        "command": "ollamaPilot.explainCode",
+        "title": "Ollama Pilot: Explain Code"
+      },
+      {
+        "command": "ollamaPilot.fixError",
+        "title": "Ollama Pilot: Fix Diagnostic Error"
+      },
+      {
+        "command": "ollamaPilot.selectModel",
+        "title": "Ollama Pilot: Select Model"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ollamaPilot.openChat",
+        "key": "ctrl+shift+o",
+        "mac": "cmd+shift+o"
+      },
+      {
+        "command": "ollamaPilot.inlineEdit",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Ollama Pilot",
+      "properties": {
+        "ollamaPilot.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL"
+        },
+        "ollamaPilot.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Default Ollama model to use"
+        },
+        "ollamaPilot.contextLines": {
+          "type": "number",
+          "default": 80,
+          "description": "Max lines of context to send around cursor (token efficiency)"
+        },
+        "ollamaPilot.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "description": "Max tokens per response"
+        },
+        "ollamaPilot.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "description": "Model temperature (lower = more deterministic)"
+        },
+        "ollamaPilot.agentMaxIterations": {
+          "type": "number",
+          "default": 10,
+          "description": "Max tool-use iterations per agent run"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollamaPilot",
+          "title": "Ollama Pilot",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ollamaPilot": [
+        {
+          "type": "webview",
+          "id": "ollamaPilot.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ollamaPilot.inlineEdit",
+          "when": "editorHasSelection",
+          "group": "ollamaPilot"
+        },
+        {
+          "command": "ollamaPilot.explainCode",
+          "when": "editorHasSelection",
+          "group": "ollamaPilot"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "@types/vscode": "^1.116.0",
+    "typescript": "^5.9.3"
+  }
+}
